@@ -61,7 +61,19 @@ export function setRefreshCookie(res, raw, expiresAt) {
   res.cookie(REFRESH_COOKIE, raw, {
     httpOnly: true,
     secure: env.isProd,
-    sameSite: env.isProd ? 'strict' : 'lax',
+    /**
+     * 'strict' blocks the cookie on every cross-site request, including the
+     * background /auth/refresh call itself whenever the client and API are
+     * on different domains (e.g. a Vercel + Render split). The refresh cookie
+     * would then never actually reach the server, so every refresh attempt
+     * failed and users were bounced to login roughly when their access token
+     * expired — regardless of the 30-day REFRESH_TOKEN_TTL_DAYS setting,
+     * which never got a chance to apply. 'none' (paired with secure: true,
+     * which browsers require alongside it) is the setting a genuinely
+     * cross-domain deployment needs. Same-origin setups (client and API
+     * served from one domain) can use 'strict' safely instead.
+     */
+    sameSite: env.isProd ? 'none' : 'lax',
     expires: expiresAt,
     path: '/api/auth',
   });
