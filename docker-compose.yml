@@ -1,0 +1,13 @@
+# Brings up MongoDB only. Run the API and client with npm for hot reload.
+services:
+  mongo:
+    image: mongo:7
+    container_name: asset-tracker-mongo
+    restart: unless-stopped
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongo-data:/data/db
+
+volumes:
+  mongo-data:
