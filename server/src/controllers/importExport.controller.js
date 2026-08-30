@@ -262,6 +262,11 @@ async function matchUser(cache, rawName) {
  * only settable by hand: an open assignment has its date corrected in place,
  * a check-in date closes it, and a check-out date on an asset with no open
  * assignment opens one dated correctly rather than dated "now".
+ *
+ * Custody only applies to an asset the sheet says is checked out to a real
+ * person. A row with dates but no resolvable holder is skipped and reported —
+ * an Assignment requires an assignedTo, and inventing one, or letting the
+ * write fail, are both worse than saying which rows were left alone.
  */
 async function syncCustody(asset, { checkedOutAt, checkedInAt, dueAt, holderId, siteId, actorId }) {
   if (!checkedOutAt && !checkedInAt && !dueAt) return null;
@@ -269,7 +274,8 @@ async function syncCustody(asset, { checkedOutAt, checkedInAt, dueAt, holderId, 
   const open = await Assignment.findOne({ asset: asset._id, checkedInAt: { $exists: false } })
     .sort({ checkedOutAt: -1 });
 
-  // Closing an existing open record.
+  // Correcting or closing a record that already exists needs no new holder,
+  // because the existing record already names one.
   if (open) {
     if (checkedOutAt) open.checkedOutAt = checkedOutAt;
     if (dueAt) open.dueAt = dueAt;
@@ -283,13 +289,19 @@ async function syncCustody(asset, { checkedOutAt, checkedInAt, dueAt, holderId, 
     return checkedInAt ? 'closed' : 'redated';
   }
 
-  // No open record. Only create one if the sheet actually describes a
-  // check-out; a bare check-in date with nothing to close is a no-op.
+  // No open record. Only a check-out can open one, and only with a holder.
   if (!checkedOutAt) return null;
+
+  const holder = holderId || asset.assignedTo;
+  if (!holder) {
+    return checkedInAt
+      ? null
+      : 'skipped_no_holder';
+  }
 
   await Assignment.create({
     asset: asset._id,
-    assignedTo: holderId || asset.assignedTo,
+    assignedTo: holder,
     assignedBy: actorId,
     checkedOutAt,
     dueAt,
@@ -490,7 +502,14 @@ export const commitImport = asyncHandler(async (req, res) => {
           const change = await syncCustody(existing, {
             ...custody, holderId, siteId: doc.site, actorId: req.user._id,
           });
-          if (change) custodyChanges.push({ row: rowNumber, tag: existing.tag, change });
+          if (change === 'skipped_no_holder') {
+            notices.push({
+              row: rowNumber, tag: existing.tag,
+              message: 'Custody dates ignored: nobody could be matched as the holder, so there is no check-out to record',
+            });
+          } else if (change) {
+            custodyChanges.push({ row: rowNumber, tag: existing.tag, change });
+          }
         }
         updated.push({ row: rowNumber, tag: existing.tag, fields: Object.keys(doc).length });
         continue;
@@ -509,7 +528,14 @@ export const commitImport = asyncHandler(async (req, res) => {
       const change = await syncCustody(saved, {
         ...custody, holderId, siteId: doc.site, actorId: req.user._id,
       });
-      if (change) custodyChanges.push({ row: rowNumber, tag: saved.tag, change });
+      if (change === 'skipped_no_holder') {
+        notices.push({
+          row: rowNumber, tag: saved.tag,
+          message: 'Custody dates ignored: nobody could be matched as the holder, so there is no check-out to record',
+        });
+      } else if (change) {
+        custodyChanges.push({ row: rowNumber, tag: saved.tag, change });
+      }
 
       created.push({ row: rowNumber, tag: saved.tag, name: saved.name });
     } catch (err) {

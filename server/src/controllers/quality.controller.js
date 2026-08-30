@@ -1,7 +1,8 @@
 import { Asset } from '../models/Asset.js';
+import { Assignment } from '../models/Assignment.js';
 import { Category, Department, Site } from '../models/Lookup.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-import { ASSIGNED_STATUSES } from '../config/reference.js';
+import { ASSIGNED_STATUSES, HOLDER_PERMITTED_STATUSES } from '../config/reference.js';
 import { isPlaceholderSerial } from '../config/reference.js';
 
 /**
@@ -106,9 +107,11 @@ async function statusHolderConflicts() {
     ],
   }).select('tag name status').limit(50).lean();
 
+  // "under_repair" and "leased" may legitimately name a holder, so only
+  // statuses where a holder makes no sense at all count as a conflict.
   const idleWithHolder = await Asset.find({
     isArchived: false,
-    status: { $nin: ASSIGNED_STATUSES },
+    status: { $nin: HOLDER_PERMITTED_STATUSES },
     assignedTo: { $exists: true, $ne: null },
   }).select('tag name status assignedTo').populate('assignedTo', 'name').limit(50).lean();
 
@@ -121,6 +124,37 @@ async function statusHolderConflicts() {
     why: 'A checked-out asset must name a holder, and an available one must not. Either way round, the register is telling two different stories.',
     heldWithoutHolder,
     idleWithHolder,
+  };
+}
+
+/**
+ * Catches the specific inconsistency an older maintenance bug left behind:
+ * an open custody record whose asset no longer says it is held by anyone.
+ * The Custody tab shows "Holding now" while the header says Available.
+ */
+async function strandedCustody() {
+  const open = await Assignment.find({ checkedInAt: { $exists: false } })
+    .populate('asset', 'tag name status assignedTo')
+    .populate('assignedTo', 'name')
+    .limit(500)
+    .lean();
+
+  const stranded = open.filter((a) => {
+    if (!a.asset) return false;
+    return !HOLDER_PERMITTED_STATUSES.includes(a.asset.status);
+  });
+
+  return {
+    key: 'stranded_custody',
+    title: 'Open check-outs on assets that are not held',
+    severity: stranded.length ? SEVERITY.high : SEVERITY.low,
+    count: stranded.length,
+    why: 'The asset header and the Custody tab disagree \u2014 one says it is free, the other says someone still has it. Check the asset in to close the record, or correct the status.',
+    assets: stranded.slice(0, 30).map((a) => ({
+      _id: a.asset._id,
+      tag: a.asset.tag,
+      name: `${a.asset.name} \u2014 open to ${a.assignedTo?.name || 'someone'}, but status is ${a.asset.status}`,
+    })),
   };
 }
 
@@ -223,14 +257,14 @@ async function missingCategory() {
 export const dataQuality = asyncHandler(async (_req, res) => {
   const [
     dupSerials, placeholders, noSerials, holders,
-    conflicts, variants, lookupChecks, noCategory,
+    conflicts, stranded, variants, lookupChecks, noCategory,
   ] = await Promise.all([
     duplicateSerials(), placeholderSerials(), missingSerials(), unmatchedHolders(),
-    statusHolderConflicts(), lookupVariants(), emptyLookups(), missingCategory(),
+    statusHolderConflicts(), strandedCustody(), lookupVariants(), emptyLookups(), missingCategory(),
   ]);
 
   const checks = [
-    conflicts, dupSerials, holders, placeholders,
+    conflicts, stranded, dupSerials, holders, placeholders,
     noSerials, noCategory, variants, ...lookupChecks,
   ];
 

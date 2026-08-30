@@ -16,20 +16,34 @@ export function AuthProvider({ children }) {
     setRoleInfo(payload.roleInfo || null);
   }, []);
 
-  const clear = useCallback(() => {
+  const clear = useCallback(({ expired = false } = {}) => {
     setAccessToken(null);
     setUser(null);
     setPermissions([]);
     setRoleInfo(null);
+    /**
+     * Sending the browser to the sign-in page here rather than relying only on
+     * a route guard means an expired session lands somewhere sensible even if
+     * the 401 came from a background request on a page that never re-renders.
+     * The current path is passed along so the person returns to where they were.
+     */
+    if (expired && !window.location.pathname.startsWith('/login')) {
+      const from = window.location.pathname + window.location.search;
+      window.sessionStorage.setItem('returnTo', from);
+      window.location.replace('/login?expired=1');
+    }
   }, []);
 
   // Cold start: the refresh cookie is the only thing that survives a reload.
   useEffect(() => {
-    setUnauthorizedHandler(clear);
+    // A 401 that survives a refresh attempt means the session is gone.
+    setUnauthorizedHandler(() => clear({ expired: true }));
     (async () => {
       try {
         adopt(await api.refresh());
       } catch {
+        // A failed refresh on a cold start is normal (nobody signed in yet),
+        // so this is not treated as an expiry — the route guard handles it.
         clear();
       } finally {
         setBooting(false);

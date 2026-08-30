@@ -17,10 +17,14 @@ export const maintenanceSchema = z.object({
   description: z.string().max(2000).optional(),
   scheduledFor: z.coerce.date().optional(),
   cost: z.coerce.number().min(0).optional(),
+  billNumber: z.string().max(80).optional(),
   vendor: objectId.optional(),
   technician: objectId.optional(),
   downtimeHours: z.coerce.number().min(0).optional(),
   resolution: z.string().max(2000).optional(),
+  /** Editable directly so a mis-typed date can be corrected after the fact. */
+  startedAt: z.coerce.date().optional(),
+  completedAt: z.coerce.date().optional(),
   /**
    * Opt-in. Scheduling a job never moves the asset; only starting work does,
    * and only when the caller says so. Booking next month's service should not
@@ -60,27 +64,39 @@ async function sendToRepair(asset, job) {
   job.previousAssetStatus = asset.status;
   job.assetStatusChanged = true;
   asset.status = 'under_repair';
-  // An asset in the workshop is not in anyone's hands.
-  asset.assignedTo = undefined;
-  asset.assignedToLabel = undefined;
-  asset.assignedAt = undefined;
-  asset.dueAt = undefined;
+  /**
+   * The holder is deliberately left attached. A repair is a temporary change
+   * of state, not a change of custody — the person is still accountable for
+   * the machine, and the open custody record stays open to say so.
+   *
+   * An earlier version cleared the holder here while leaving that custody
+   * record open, which is exactly what produced assets reading "Available"
+   * in the header while the Custody tab still said someone was holding them.
+   */
   await asset.save();
   return true;
 }
 
-/** Puts the asset back to whatever it was before this job took it. */
+/**
+ * Puts the asset back to exactly what it was before this job took it.
+ *
+ * "Exactly" matters: a checked-out asset returns to its custodian, a leased
+ * one returns to leased, an available one to available. Guessing "available"
+ * for everything silently ended people's custody and lost the lease state.
+ */
 async function returnFromRepair(asset, job) {
   if (!job.assetStatusChanged) return false;
   if (asset.status !== 'under_repair') return false;
 
-  // A job that took a checked-out asset returns it to stock, not to the
-  // person — the custody record was closed when it went in.
-  const restore = job.previousAssetStatus === 'checked_out'
-    ? 'available'
-    : job.previousAssetStatus || 'available';
+  asset.status = job.previousAssetStatus || 'available';
 
-  asset.status = restore;
+  // If the holder went missing while the job was open (older data, or a
+  // manual edit), fall back rather than restoring a checked-out asset that
+  // names nobody — that is the very inconsistency this path exists to avoid.
+  if (asset.status === 'checked_out' && !asset.assignedTo && !asset.assignedToLabel) {
+    asset.status = 'available';
+  }
+
   await asset.save();
   job.assetStatusChanged = false;
   return true;

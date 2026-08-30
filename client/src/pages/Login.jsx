@@ -67,7 +67,12 @@ export function Login() {
   const location = useLocation();
   const toast = useToast();
 
-  if (isAuthenticated) return <Navigate to={location.state?.from || '/'} replace />;
+  // Set when a session expired mid-use, so the redirect is explained rather
+  // than looking like the app spontaneously signed the person out.
+  const expired = new URLSearchParams(location.search).get('expired') === '1';
+  const returnTo = window.sessionStorage.getItem('returnTo');
+
+  if (isAuthenticated) return <Navigate to={location.state?.from || returnTo || '/'} replace />;
 
   const submit = async (e) => {
     e.preventDefault();
@@ -75,7 +80,9 @@ export function Login() {
     setErrors({});
     try {
       await login(form.email.trim(), form.password);
-      navigate(location.state?.from || '/', { replace: true });
+      const back = location.state?.from || returnTo || '/';
+      window.sessionStorage.removeItem('returnTo');
+      navigate(back, { replace: true });
     } catch (err) {
       setErrors(err.details || {});
       toast.error(err.message);
@@ -91,6 +98,12 @@ export function Login() {
       footer={<>No account yet? <Link to="/register" className="font-medium text-brand hover:underline">Request access</Link></>}
     >
       <form onSubmit={submit} className="space-y-4">
+        {expired && (
+          <div className="rounded-md border border-amber/40 bg-amber-soft px-3 py-2.5">
+            <p className="text-sm text-ink">Your session ended, so you were signed out.</p>
+            <p className="mt-0.5 text-xs text-muted">Sign in again and you will be taken back to where you were.</p>
+          </div>
+        )}
         <Field label="Work email" error={errors.email} required>
           <Input
             type="email" autoComplete="email" required autoFocus
@@ -149,10 +162,10 @@ export function Register() {
     >
       <form onSubmit={submit} className="space-y-4">
         <Field label="Full name" error={errors.name} required>
-          <Input required autoFocus value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Saif Ali" />
+          <Input required autoFocus value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Ritika Sharma" />
         </Field>
         <Field label="Work email" error={errors.email} required>
-          <Input type="email" required value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="you@nutraj.com" />
+          <Input type="email" required value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="you@company.com" />
         </Field>
         <Field label="Department" error={errors.department}>
           <Input value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} placeholder="IT" />

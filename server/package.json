@@ -10,7 +10,8 @@
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
     "seed": "node src/seed/seed.js",
-    "import": "node src/seed/importRegister.js"
+    "import": "node src/seed/importRegister.js",
+    "repair:custody": "node src/seed/repairCustody.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

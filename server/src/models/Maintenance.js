@@ -15,6 +15,8 @@ const maintenanceSchema = new mongoose.Schema(
     completedAt: { type: Date },
     cost: { type: Number, min: 0 },
     currency: { type: String, default: 'INR', uppercase: true },
+    /** Vendor's invoice or bill reference for this job, for reconciliation. */
+    billNumber: { type: String, trim: true, maxlength: 80, index: true },
     vendor: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor' },
     technician: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     downtimeHours: { type: Number, min: 0 },

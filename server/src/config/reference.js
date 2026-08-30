@@ -24,6 +24,14 @@ export const ASSIGNED_STATUSES = ['checked_out'];
 /** Statuses that make an asset unavailable to check out. */
 export const UNAVAILABLE_STATUSES = ['checked_out', 'leased', 'under_repair'];
 
+/**
+ * Statuses where naming a holder is legitimate, as opposed to required.
+ * An asset in the workshop keeps its custodian — a repair is a temporary
+ * change of state, not a change of custody — so "under_repair with a holder"
+ * is correct and must not be reported as a contradiction.
+ */
+export const HOLDER_PERMITTED_STATUSES = ['checked_out', 'under_repair', 'leased'];
+
 /** Statuses that take an asset off the live register for good. */
 export const CLOSED_STATUSES = ['disposed', 'sold', 'donated', 'lost_missing'];
 

@@ -1,18 +1,24 @@
 import { useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { CheckCircle2, PlayCircle, Wrench, XCircle } from 'lucide-react';
-import { Badge, Button, Card, EmptyState, Field, Select, Textarea } from '../components/ui/primitives.jsx';
+import { CheckCircle2, Pencil, PlayCircle, Wrench, XCircle } from 'lucide-react';
+import {
+  Badge, Button, Card, EmptyState, Field, IconButton, Input, Select, Textarea,
+} from '../components/ui/primitives.jsx';
 import { Modal } from '../components/ui/overlays.jsx';
 import { AssetTag, DataTable, JobStatusPill, Pagination } from '../components/ui/data.jsx';
 import { Can } from '../components/Can.jsx';
 import { useApi } from '../hooks/useApi.js';
 import { useToast } from '../context/ToastContext.jsx';
 import { api } from '../lib/api.js';
-import { MAINTENANCE_STATUSES, MAINTENANCE_STATUS_META, P } from '../lib/constants.js';
+import {
+  MAINTENANCE_STATUSES, MAINTENANCE_STATUS_META, MAINTENANCE_TYPES, P,
+} from '../lib/constants.js';
 import { date, money, titleCase } from '../lib/format.js';
 
 function CompleteDialog({ job, onClose, onDone }) {
-  const [form, setForm] = useState({ resolution: '', cost: job.cost ?? '', downtimeHours: '' });
+  const [form, setForm] = useState({
+    resolution: '', cost: job.cost ?? '', downtimeHours: '', billNumber: job.billNumber ?? '',
+  });
   const [busy, setBusy] = useState(false);
   const toast = useToast();
 
@@ -23,6 +29,7 @@ function CompleteDialog({ job, onClose, onDone }) {
         status: 'completed',
         resolution: form.resolution || undefined,
         cost: form.cost || undefined,
+        billNumber: form.billNumber || undefined,
         downtimeHours: form.downtimeHours || undefined,
       });
       toast.success('Job closed. The asset is back in stock.');
@@ -50,19 +57,22 @@ function CompleteDialog({ job, onClose, onDone }) {
         <Field label="What was done">
           <Textarea value={form.resolution} onChange={(e) => setForm({ ...form, resolution: e.target.value })} placeholder="Battery replaced under warranty; no charge." />
         </Field>
+        <Field label="Bill / invoice number" hint="The vendor's reference, for reconciling the spend later.">
+          <Input value={form.billNumber} onChange={(e) => setForm({ ...form, billNumber: e.target.value })} className="font-mono" />
+        </Field>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Final cost">
-            <input
+            <Input
               type="number" min="0" value={form.cost}
               onChange={(e) => setForm({ ...form, cost: e.target.value })}
-              className="h-10 w-full rounded-md border border-line bg-surface px-3 text-sm tabular"
+              className="tabular"
             />
           </Field>
           <Field label="Downtime (hours)">
-            <input
+            <Input
               type="number" min="0" value={form.downtimeHours}
               onChange={(e) => setForm({ ...form, downtimeHours: e.target.value })}
-              className="h-10 w-full rounded-md border border-line bg-surface px-3 text-sm tabular"
+              className="tabular"
             />
           </Field>
         </div>
@@ -74,6 +84,7 @@ function CompleteDialog({ job, onClose, onDone }) {
 export function MaintenancePage() {
   const [params, setParams] = useSearchParams();
   const [closing, setClosing] = useState(null);
+  const [editing, setEditing] = useState(null);
   const navigate = useNavigate();
   const toast = useToast();
 
@@ -122,6 +133,7 @@ export function MaintenancePage() {
     { key: 'status', header: 'Status', render: (r) => <JobStatusPill value={r.status} /> },
     { key: 'when', header: 'Scheduled', render: (r) => <span className="text-sm text-muted">{r.scheduledFor ? date(r.scheduledFor) : '—'}</span> },
     { key: 'who', header: 'Handled by', render: (r) => <span className="text-sm text-muted">{r.vendor?.name || r.technician?.name || '—'}</span> },
+    { key: 'bill', header: 'Bill no.', render: (r) => <span className="font-mono text-xs text-muted">{r.billNumber || '—'}</span> },
     { key: 'cost', header: 'Cost', align: 'right', render: (r) => <span className="text-sm">{r.cost != null ? money(r.cost, r.currency) : '—'}</span> },
     {
       key: 'actions', header: '', align: 'right',
@@ -143,6 +155,7 @@ export function MaintenancePage() {
             {['scheduled', 'in_progress'].includes(r.status) && (
               <Button size="sm" variant="ghost" icon={XCircle} onClick={() => move(r, 'cancelled')}>Cancel</Button>
             )}
+            <IconButton label="Edit job" icon={Pencil} onClick={() => setEditing(r)} />
           </div>
         </Can>
       ),
@@ -197,6 +210,150 @@ export function MaintenancePage() {
       </Card>
 
       {closing && <CompleteDialog job={closing} onClose={() => setClosing(null)} onDone={reload} />}
+      {editing && <EditJobDialog job={editing} onClose={() => setEditing(null)} onDone={reload} />}
     </div>
+  );
+}
+
+/**
+ * Full edit of a maintenance job. Separate from the Close dialog because
+ * closing is a state change with its own required fields, whereas this is
+ * plain correction — a wrong title, a mis-typed date, a bill number that
+ * arrived after the job was already closed.
+ */
+function EditJobDialog({ job, onClose, onDone }) {
+  const asDate = (v) => (v ? new Date(v).toISOString().slice(0, 10) : '');
+  const [form, setForm] = useState({
+    title: job.title || '',
+    type: job.type || 'repair',
+    status: job.status || 'scheduled',
+    description: job.description || '',
+    scheduledFor: asDate(job.scheduledFor),
+    completedAt: asDate(job.completedAt),
+    billNumber: job.billNumber || '',
+    cost: job.cost ?? '',
+    downtimeHours: job.downtimeHours ?? '',
+    resolution: job.resolution || '',
+    vendor: job.vendor?._id || job.vendor || '',
+    technician: job.technician?._id || job.technician || '',
+  });
+  const [busy, setBusy] = useState(false);
+  const { data: vendors } = useApi('/lookups/vendors');
+  const { data: people } = useApi('/users', { limit: 300, active: 'true', sort: 'name' });
+  const toast = useToast();
+
+  const statusChanged = form.status !== job.status;
+
+  const submit = async () => {
+    setBusy(true);
+    try {
+      // Blank strings would clear real values, so only send what is filled in.
+      const payload = Object.fromEntries(
+        Object.entries(form).filter(([, v]) => v !== '' && v !== null && v !== undefined)
+      );
+      const res = await api.patch(`/maintenance/${job._id}`, payload);
+      const extra = res.assetStatusChanged
+        ? ' — the asset is now under repair'
+        : res.assetStatusRestored
+          ? ' — the asset is back to its previous state'
+          : '';
+      toast.success(`Job updated${extra}`);
+      onDone();
+      onClose();
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      open onClose={onClose}
+      title={`Edit "${job.title}"`}
+      description={job.asset?.tag ? `On ${job.asset.tag} — ${job.asset.name || ''}` : undefined}
+      size="lg"
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="primary" onClick={submit} loading={busy} disabled={form.title.trim().length < 3}>
+            Save changes
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <Field label="What needs doing" required>
+          <Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+        </Field>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Type">
+            <Select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
+              {MAINTENANCE_TYPES.map((t) => <option key={t} value={t}>{titleCase(t)}</option>)}
+            </Select>
+          </Field>
+          <Field
+            label="Status"
+            hint={statusChanged ? 'Changing this can move the asset in or out of the workshop.' : undefined}
+          >
+            <Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+              {MAINTENANCE_STATUSES.map((st) => (
+                <option key={st} value={st}>{MAINTENANCE_STATUS_META[st].label}</option>
+              ))}
+            </Select>
+          </Field>
+
+          <Field label="Scheduled for">
+            <Input type="date" value={form.scheduledFor} onChange={(e) => setForm({ ...form, scheduledFor: e.target.value })} />
+          </Field>
+          <Field label="Completed on" hint="Correct this if the job was closed on the wrong day.">
+            <Input type="date" value={form.completedAt} onChange={(e) => setForm({ ...form, completedAt: e.target.value })} />
+          </Field>
+
+          <Field label="Vendor">
+            <Select value={form.vendor} onChange={(e) => setForm({ ...form, vendor: e.target.value })}>
+              <option value="">Not set</option>
+              {(vendors?.items || []).map((v) => <option key={v._id} value={v._id}>{v.name}</option>)}
+            </Select>
+          </Field>
+          <Field label="Technician">
+            <Select value={form.technician} onChange={(e) => setForm({ ...form, technician: e.target.value })}>
+              <option value="">Not set</option>
+              {(people?.items || []).map((u) => <option key={u._id} value={u._id}>{u.name}</option>)}
+            </Select>
+          </Field>
+
+          <Field label="Bill / invoice number">
+            <Input
+              value={form.billNumber}
+              onChange={(e) => setForm({ ...form, billNumber: e.target.value })}
+              className="font-mono"
+            />
+          </Field>
+          <Field label="Cost">
+            <Input
+              type="number" min="0" value={form.cost}
+              onChange={(e) => setForm({ ...form, cost: e.target.value })}
+              className="tabular"
+            />
+          </Field>
+          <Field label="Downtime (hours)">
+            <Input
+              type="number" min="0" value={form.downtimeHours}
+              onChange={(e) => setForm({ ...form, downtimeHours: e.target.value })}
+              className="tabular"
+            />
+          </Field>
+        </div>
+
+        <Field label="Details">
+          <Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+        </Field>
+        <Field label="What was done">
+          <Textarea value={form.resolution} onChange={(e) => setForm({ ...form, resolution: e.target.value })} />
+        </Field>
+      </div>
+    </Modal>
   );
 }

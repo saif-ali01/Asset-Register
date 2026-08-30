@@ -2,6 +2,7 @@ import { z } from 'zod';
 import mongoose from 'mongoose';
 import XLSX from 'xlsx';
 import { Asset } from '../models/Asset.js';
+import { Site } from '../models/Lookup.js';
 import { Assignment } from '../models/Assignment.js';
 import { Maintenance } from '../models/Maintenance.js';
 import { ApiError } from '../utils/ApiError.js';
@@ -83,6 +84,8 @@ export const reportSpecSchema = z.object({
     category: objectId.optional(),
     department: objectId.optional(),
     site: objectId.optional(),
+    /** Filters to every site this person handles — "show me Ankit's fleet". */
+    handler: objectId.optional(),
     vendor: objectId.optional(),
     entity: z.string().max(60).optional(),
     brand: z.string().max(120).optional(),
@@ -208,10 +211,22 @@ export const SPECIAL_PRESETS = {
   },
 };
 
+/**
+ * Handler is a property of the site, not the asset, so filtering by it means
+ * resolving that person's sites first and matching on those. Doing it here
+ * keeps the aggregation itself a plain $match.
+ */
+async function resolveHandlerSites(handlerId) {
+  const sites = await Site.find({ handler: handlerId }).select('_id').lean();
+  return sites.map((s) => s._id);
+}
+
 function buildMatch(filters = {}) {
   const match = { isArchived: Boolean(filters.archived) };
 
   if (filters.status?.length) match.status = { $in: filters.status };
+  // Set by runReport once the handler's sites are known.
+  if (filters.__siteIds) match.site = { $in: filters.__siteIds };
   if (filters.category) match.category = new mongoose.Types.ObjectId(filters.category);
   if (filters.department) match.department = new mongoose.Types.ObjectId(filters.department);
   if (filters.site) match.site = new mongoose.Types.ObjectId(filters.site);
@@ -381,6 +396,7 @@ async function runMaintenanceHistory() {
       { key: 'status', label: 'Status', type: 'text' },
       { key: 'scheduledFor', label: 'Scheduled', type: 'date' },
       { key: 'completedAt', label: 'Completed', type: 'date' },
+      { key: 'billNumber', label: 'Bill number', type: 'text' },
       { key: 'cost', label: 'Cost', type: 'money' },
       { key: 'downtimeHours', label: 'Downtime (h)', type: 'number' },
       { key: 'handledBy', label: 'Handled by', type: 'text' },
@@ -393,6 +409,7 @@ async function runMaintenanceHistory() {
       status: r.status,
       scheduledFor: r.scheduledFor || null,
       completedAt: r.completedAt || null,
+      billNumber: r.billNumber || '',
       cost: r.cost ?? null,
       downtimeHours: r.downtimeHours ?? null,
       handledBy: r.vendor?.name || r.technician?.name || '',
@@ -422,6 +439,12 @@ export async function runReport(input) {
     limit: input.limit || base?.limit,
   };
 
+  if (spec.filters?.handler) {
+    const siteIds = await resolveHandlerSites(spec.filters.handler);
+    // A handler with no sites should return nothing, not everything.
+    spec.filters.__siteIds = siteIds.length ? siteIds : [new mongoose.Types.ObjectId()];
+  }
+
   const rows = await Asset.aggregate(buildPipeline(spec));
   const columns = describeColumns(spec);
 
@@ -443,6 +466,19 @@ export const listReports = asyncHandler(async (_req, res) => {
     dimensions: Object.entries(DIMENSIONS).map(([key, d]) => ({ key, label: d.label })),
     measures: Object.entries(MEASURES).map(([key, m]) => ({ key, label: m.label, money: Boolean(m.money) })),
     statuses: ASSET_STATUSES,
+    // Every person who handles at least one site, for the handler filter.
+    handlers: await Site.find({ handler: { $exists: true, $ne: null } })
+      .populate('handler', 'name')
+      .select('handler')
+      .lean()
+      .then((sites) => {
+        const seen = new Map();
+        for (const s of sites) {
+          if (s.handler?._id) seen.set(String(s.handler._id), s.handler.name);
+        }
+        return [...seen.entries()].map(([_id, name]) => ({ _id, name })).sort((a, b) => a.name.localeCompare(b.name));
+      })
+      .catch(() => []),
   });
 });
 

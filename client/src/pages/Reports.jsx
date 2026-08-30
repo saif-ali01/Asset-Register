@@ -230,6 +230,12 @@ function Builder({ catalog, spec, onChange, onRun, running }) {
                 {lookups.departments.map((d) => <option key={d._id} value={d._id}>{d.name}</option>)}
               </Select>
             </Field>
+            <Field label="Handler" hint="Every site this person looks after.">
+              <Select value={spec.filters.handler || ''} onChange={(e) => setFilter('handler', e.target.value)}>
+                <option value="">All handlers</option>
+                {(catalog.handlers || []).map((h) => <option key={h._id} value={h._id}>{h.name}</option>)}
+              </Select>
+            </Field>
           </div>
         </div>
 
@@ -352,6 +358,47 @@ export function Reports() {
           )
         }
       />
+
+      {catalog.handlers?.length > 0 && (
+        <Card className="flex flex-wrap items-center gap-2 p-3">
+          <span className="text-sm font-medium text-ink">Just one handler?</span>
+          <span className="text-xs text-muted">Runs a full asset breakdown for their sites only.</span>
+          <div className="ml-auto flex flex-wrap gap-1.5">
+            {catalog.handlers.map((h) => (
+              <Button
+                key={h._id}
+                size="sm"
+                variant={spec.filters.handler === h._id ? 'primary' : 'secondary'}
+                onClick={() => {
+                  const next = {
+                    groupBy: ['site', 'category'],
+                    measures: ['count', 'available', 'checkedOut', 'underRepair', 'disposed'],
+                    filters: { handler: h._id },
+                    sort: { by: 'count', dir: 'desc' },
+                  };
+                  setSpec(next);
+                  runSpec(next, null);
+                }}
+              >
+                {h.name}
+              </Button>
+            ))}
+            {spec.filters.handler && (
+              <Button
+                size="sm" variant="ghost"
+                onClick={() => {
+                  const next = { ...spec, filters: { ...spec.filters, handler: undefined } };
+                  delete next.filters.handler;
+                  setSpec(next);
+                  runSpec(next, null);
+                }}
+              >
+                Clear
+              </Button>
+            )}
+          </div>
+        </Card>
+      )}
 
       <Card>
         <div className="border-b border-line px-4 py-3">

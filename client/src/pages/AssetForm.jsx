@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Save } from 'lucide-react';
-import { Button, Card, Field, Input, Select, Textarea } from '../components/ui/primitives.jsx';
+import { ArrowLeft, Plus, Save, Trash2 } from 'lucide-react';
+import {
+  Button, Card, Field, IconButton, Input, Select, Textarea,
+} from '../components/ui/primitives.jsx';
 import { useApi } from '../hooks/useApi.js';
 import { useToast } from '../context/ToastContext.jsx';
 import { api } from '../lib/api.js';
@@ -35,6 +37,12 @@ export function AssetForm() {
   const { id } = useParams();
   const editing = Boolean(id);
   const [form, setForm] = useState(BLANK);
+  /**
+   * Custom fields are held as an ordered list of pairs rather than an object,
+   * so a key can be renamed while it is being typed without React losing the
+   * row's identity on every keystroke.
+   */
+  const [customFields, setCustomFields] = useState([]);
   const [errors, setErrors] = useState({});
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
@@ -63,6 +71,7 @@ export function AssetForm() {
       usefulLifeMonths: a.usefulLifeMonths ?? '',
       salvageValue: a.salvageValue ?? '',
     });
+    setCustomFields(Object.entries(a.customFields || {}).map(([key, value]) => ({ key, value })));
   }, [existing]);
 
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
@@ -76,6 +85,17 @@ export function AssetForm() {
     const payload = Object.fromEntries(
       Object.entries(form).filter(([, v]) => v !== '' && v !== null && v !== undefined)
     );
+
+    // Rows with a blank name are dropped; a blank value is kept, since
+    // "recorded but empty" is a real state for these.
+    const named = customFields.filter((f) => f.key.trim());
+    if (named.length) {
+      payload.customFields = Object.fromEntries(named.map((f) => [f.key.trim(), String(f.value ?? '')]));
+    } else if (editing && Object.keys(existing?.asset?.customFields || {}).length) {
+      // All rows removed: send an empty object so the server clears them,
+      // rather than omitting the key and leaving the old values in place.
+      payload.customFields = {};
+    }
 
     try {
       const saved = editing
@@ -210,6 +230,67 @@ export function AssetForm() {
           <Textarea rows={4} value={form.notes} onChange={set('notes')} placeholder="Repairs, quirks, accessories included in the box." />
         </Field>
       </Group>
+
+      <Card className="p-4 sm:p-5">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-ink">Custom fields</h3>
+            <p className="mt-0.5 text-xs text-muted">
+              Anything this register tracks that the form above has no place for — including columns
+              carried over from a spreadsheet import. Editable here.
+            </p>
+          </div>
+          <Button
+            type="button" size="sm" icon={Plus}
+            onClick={() => setCustomFields((f) => [...f, { key: '', value: '' }])}
+          >
+            Add field
+          </Button>
+        </div>
+
+        {customFields.length === 0 ? (
+          <p className="rounded-md border border-dashed border-line bg-raised px-3 py-6 text-center text-sm text-muted">
+            No custom fields on this asset.
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {customFields.map((field, i) => (
+              <li key={i} className="flex flex-wrap items-start gap-2 sm:flex-nowrap">
+                <Input
+                  aria-label={`Custom field ${i + 1} name`}
+                  placeholder="Field name"
+                  value={field.key}
+                  onChange={(e) => setCustomFields((list) =>
+                    list.map((f, j) => (j === i ? { ...f, key: e.target.value } : f))
+                  )}
+                  className="w-full sm:w-1/3"
+                />
+                <Input
+                  aria-label={`Custom field ${i + 1} value`}
+                  placeholder="Value"
+                  value={field.value}
+                  onChange={(e) => setCustomFields((list) =>
+                    list.map((f, j) => (j === i ? { ...f, value: e.target.value } : f))
+                  )}
+                  className="w-full flex-1"
+                />
+                <IconButton
+                  label={`Remove ${field.key || 'this field'}`}
+                  icon={Trash2}
+                  onClick={() => setCustomFields((list) => list.filter((_, j) => j !== i))}
+                  className="hover:text-danger"
+                />
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {customFields.some((f) => !f.key.trim()) && (
+          <p className="mt-2 text-xs text-amber">
+            Rows without a field name are discarded when you save.
+          </p>
+        )}
+      </Card>
 
       <div className="flex justify-end gap-2">
         <Button type="button" onClick={() => navigate(-1)}>Cancel</Button>
